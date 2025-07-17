@@ -1,0 +1,24 @@
+{
+  "hotReload": {
+    "watchDirs": [
+      "src",
+      "content_scripts",
+      "background.ts",
+      "manifest.json",
+      "icons"
+    ],
+    "ignorePatterns": [
+      "node_modules",
+      "\\.git",
+      "dist",
+      "\\.DS_Store",
+      "\\.log$",
+      "\\.tmp$",
+      "~$",
+      "\\.swp$",
+      "\\.lock$"
+    ],
+    "debounceMs": 300,
+    "buildCommand": "pnpm run build"
+  }
+}
