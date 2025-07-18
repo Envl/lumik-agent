@@ -71,7 +71,14 @@ class AgentState {
     userContext: Record<string, any> = {}
     isProcessing: boolean = false
 
-    addAction(action: any, result: any): void {
+    addAction(
+        action: any,
+        result: {
+            result: ToolResult
+            success: boolean
+            tabs: any[]
+        }
+    ): void {
         this.actionHistory.push({
             action,
             result,
@@ -85,6 +92,7 @@ class AgentState {
     }
 
     getRecentActions(count: number = 5): AgentAction[] {
+        console.log(`📜 DEBUG: Getting last ${count} actions`, this.actionHistory.slice(-count))
         return this.actionHistory.slice(-count)
     }
 
@@ -106,7 +114,7 @@ const AVAILABLE_TOOLS: Record<string, string> = {
     dom_click:
         'Clicks on a specific element on the page. Use this after scanning page to get element IDs. Args: {elementId: string} - The elementId from page scan results (e.g., "llm-5")',
     dom_type:
-        'Types text into an input field, textarea, or editable element. Clears existing content first. Args: {elementId: string, text: string} - elementId from page scan, text to type',
+        'Types text into an input field, textarea, or editable element. Clears existing content first. Args: {elementId: string, text: string, hitEnter?:boolean} - elementId from page scan, text to type, if true hit Enter after typing',
     dom_select:
         'Selects an option from a dropdown/select element by matching option text. Args: {elementId: string, optionText: string} - elementId from page scan, partial text of option to select',
     dom_scroll:
@@ -226,8 +234,7 @@ class LLMBridge {
         recentActions: AgentAction[],
         availableTools: Record<string, string>
     ): Promise<any> {
-        console.log('build systemPrompt')
-        const systemPrompt = this.buildSystemPrompt(availableTools)
+        const systemPrompt = await this.buildSystemPrompt(availableTools)
         const userPrompt = this.buildUserPrompt(
             userCommand,
             pageContext,
@@ -258,15 +265,23 @@ class LLMBridge {
         return this.parseAgentDecision(response.content)
     }
 
-    private buildSystemPrompt(availableTools: Record<string, string>): string {
+    private async buildSystemPrompt(availableTools: Record<string, string>) {
         const toolsList = Object.entries(availableTools)
             .map(([name, description]) => `- ${name}: ${description}`)
             .join('\n')
 
-        console.log('taskPlan?', !!taskPlan)
+        const promptOpeningTabs = `Other Opening Tabs:
+${await tabsList().then((d) =>
+    d?.tabs
+        .map(
+            (t: { id: number; title: string; url: string }) => `- ID:${t.id} [${t.title}](${t.url})`
+        )
+        .join('  \h')
+)}`
+
         // Include task plan in system prompt if available
         const taskPlanSection = taskPlan
-            ? `
+            ? `${promptOpeningTabs}
 
 ## Current Task Plan
 ${taskPlan}
@@ -299,12 +314,6 @@ CRITICAL TAB ID RULES:
 - Tab IDs from tabs_list results are formatted as "ID:123 'Title' (URL)" - extract the number after "ID:"
 - Never guess tab IDs - always use the exact IDs returned by tabs_list
 
-CRITICAL EPISODE/NUMBERING RULES:
-- When user asks for "9th episode", they mean the 9th item in a list, NOT element index 8
-- Array indices start at 0, but human counting starts at 1
-- If user wants the "9th episode", look for the element at position 9 in the list (index 8)
-- Always count elements carefully - the first element is #1, second is #2, etc.
-- Do not complete tasks prematurely - verify you have the correct item before proceeding
 
 TOOL USAGE PATTERNS:
 - Tab switching: tabs_list → tabs_switch (with tabId or url pattern)
@@ -346,7 +355,7 @@ Examples:
                 const result = actionItem.result
                 let resultText = ''
 
-                if (result.success) {
+                if (result?.success) {
                     if (result.tabs) {
                         // Format tabs_list results
                         resultText = `Found ${result.tabs.length} tabs: ${result.tabs.map((t: any) => `ID:${t.id} "${t.title}" (${t.url})`).join(', ')}`
@@ -393,8 +402,7 @@ Examples:
             ? `Current Page Context:
 - URL: ${pageContext.url || 'Unknown'}
 - Title: ${pageContext.title || 'Unknown'}
-- Available Elements (${pageContext.elements.length} total): ${JSON.stringify(pageContext.elements || [], null, 2)}
-- NOTE: If this appears to be an episode list, remember that human counting starts at 1 (1st, 2nd, 3rd, etc.) but element indices start at 0`
+- Available Elements (${pageContext.elements.length} total): ${JSON.stringify(pageContext.elements || [], null, 2)}`
             : `Current Page Context:
 - URL: ${pageContext.url || 'Unknown'}
 - Title: ${pageContext.title || 'Unknown'}
@@ -981,7 +989,7 @@ async function callLLM(
                     }
                 }
             }
-        } else if (decision.action === 'ask_question') {
+        } else if (decision.action === 'ask_user') {
             return {
                 success: true,
                 action: {
@@ -1023,7 +1031,10 @@ async function getConversationHistory(): Promise<ConversationMessage[]> {
     }
 }
 
-async function executeTool(action: any): Promise<ToolResult> {
+async function executeTool(action: {
+    tool_name: string
+    arguments: Record<string, any>
+}): Promise<ToolResult> {
     const { tool_name, arguments: args } = action
 
     try {
@@ -1032,7 +1043,7 @@ async function executeTool(action: any): Promise<ToolResult> {
                 return await domClick(args.elementId)
 
             case 'dom_type':
-                return await domType(args.elementId, args.text)
+                return await domType(args.elementId, args.text, args.hitEnter ?? false)
 
             case 'dom_select':
                 return await domSelect(args.elementId, args.optionText)
@@ -1203,7 +1214,7 @@ async function domClick(elementId: string): Promise<ToolResult> {
     }
 }
 
-async function domType(elementId: string, text: string): Promise<ToolResult> {
+async function domType(elementId: string, text: string, hitEnter: boolean): Promise<ToolResult> {
     const activeTab = await getActiveTab()
     if (!activeTab?.id) {
         return { success: false, error: 'No active tab found' }
@@ -1215,18 +1226,110 @@ async function domType(elementId: string, text: string): Promise<ToolResult> {
 
         const result = await chrome.scripting.executeScript({
             target: { tabId: activeTab.id },
-            func: (elementId: string, text: string) => {
-                const element = document.querySelector(
-                    `[data-llm-id="${elementId}"]`
-                ) as HTMLInputElement
-                if (!element) return { success: false, error: 'Element not found' }
+            func: (elementId: string, text: string, hitEnter?: boolean) => {
+                const el = document.querySelector(`[data-llm-id="${elementId}"]`) as HTMLElement
 
-                element.focus()
-                element.value = text
-                element.dispatchEvent(new Event('input', { bubbles: true }))
+                if (!el)
+                    return {
+                        success: false,
+                        error: 'Element not found'
+                    }
+
+                const dom = {
+                    focusEditor(editor: HTMLElement) {
+                        // Focus the element
+                        editor.focus()
+
+                        // Simulate typing to activate the editor
+                        const inputEvent = new InputEvent('input', {
+                            bubbles: true,
+                            cancelable: true,
+                            inputType: 'insertText',
+                            data: ''
+                        })
+
+                        // Dispatch multiple events that might wake up the editor
+                        editor.dispatchEvent(new Event('focus', { bubbles: true }))
+                        editor.dispatchEvent(new Event('focusin', { bubbles: true }))
+                        editor.dispatchEvent(inputEvent)
+
+                        // Try to position cursor by simulating a click at coordinates
+                        const rect = editor.getBoundingClientRect()
+                        const clickEvent = new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: rect.left + 10,
+                            clientY: rect.top + 10
+                        })
+                        editor.dispatchEvent(clickEvent)
+                    },
+
+                    inputTextByValue(
+                        element: HTMLInputElement | HTMLTextAreaElement,
+                        text: string
+                    ) {
+                        this.focusEditor(element)
+                        element.value = text
+                        element.dispatchEvent(
+                            new Event('input', {
+                                bubbles: true,
+                                cancelable: true
+                            })
+                        )
+                        element.dispatchEvent(
+                            new Event('change', {
+                                bubbles: true,
+                                cancelable: true
+                            })
+                        )
+                    },
+
+                    inputTextIntoContentEditable(element: HTMLElement, text: string) {
+                        this.focusEditor(element)
+
+                        setTimeout(() => {
+                            // Use the clipboard API to paste text
+                            element.focus()
+                            document.execCommand('insertText', false, text)
+
+                            element.dispatchEvent(
+                                new Event('input', {
+                                    bubbles: true,
+                                    cancelable: true
+                                })
+                            )
+                        })
+                    },
+
+                    async inputText(editor: HTMLElement, text: string) {
+                        console.log('inputText called:', text, editor)
+
+                        if (editor.tagName === 'INPUT' || editor.tagName === 'TEXTAREA') {
+                            this.inputTextByValue(
+                                editor as HTMLInputElement | HTMLTextAreaElement,
+                                text
+                            )
+                        } else if (editor.isContentEditable) {
+                            this.inputTextIntoContentEditable(editor, text)
+                        }
+                    }
+                }
+
+                dom.inputText(el, text)
+
+                if (hitEnter) {
+                    const enterEvent = new KeyboardEvent('keydown', {
+                        key: 'Enter',
+                        code: 'Enter',
+                        bubbles: true,
+                        cancelable: true
+                    })
+                    el.dispatchEvent(enterEvent)
+                }
+
                 return { success: true }
             },
-            args: [elementId, text]
+            args: [elementId, text, hitEnter]
         })
 
         return result[0].result as ToolResult
@@ -1580,7 +1683,7 @@ async function highlightElement(elementId: string): Promise<ToolResult> {
 // Utility Functions
 async function waitForPageStabilization(): Promise<void> {
     const maxWaitTime = 3000 // Maximum wait time in milliseconds
-    const checkInterval = 100 // Check every 100ms
+    const checkInterval = 200 // Check every 100ms
     const startTime = Date.now()
 
     console.log('⏳ DEBUG: Waiting for page stabilization...')
@@ -1595,7 +1698,6 @@ async function waitForPageStabilization(): Promise<void> {
 
             // Check if tab is still loading
             if (activeTab.status === 'loading') {
-                console.log('🔄 DEBUG: Tab still loading, waiting...')
                 await new Promise((resolve) => setTimeout(resolve, checkInterval))
                 continue
             }
@@ -1779,13 +1881,13 @@ async function waitForDOMStabilization(): Promise<void> {
                         `overlay elements (${result.debugInfo.overlayElementsCount} found)`
                     )
 
-                console.log(
-                    `🔄 DEBUG: DOM unstable after ${elapsed}ms. Reasons: ${unstableReasons.join(', ')}`
-                )
-                console.log(
-                    '🔍 DEBUG: Network tracking initialized:',
-                    result.debugInfo.networkTrackingInitialized
-                )
+                // console.log(
+                //     `🔄 DEBUG: DOM unstable after ${elapsed}ms. Reasons: ${unstableReasons.join(', ')}`
+                // )
+                // console.log(
+                //     '🔍 DEBUG: Network tracking initialized:',
+                //     result.debugInfo.networkTrackingInitialized
+                // )
 
                 // Only log detailed checks every 500ms to avoid spam
                 if (elapsed % 500 < 50) {

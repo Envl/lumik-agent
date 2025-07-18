@@ -54,16 +54,22 @@ interface MessageResponse {
 ;(function () {
     'use strict'
 
+    // Use a global counter on the window object to ensure uniqueness across multiple runs
+    if (typeof (window as any).llm_page_scanner_element_index === 'undefined') {
+        ;(window as any).llm_page_scanner_element_index = 0
+    }
+
     // Main function to get all interactable elements
     function getInteractableElements(): { pageMarkdown: string; elements: ElementInfo[] } {
         const elements: ElementInfo[] = []
-        let elementIndex = 0
 
         // Comprehensive selectors for interactable elements
         const selectors = [
             'button',
             'input',
             'textarea',
+            // contenteditable true
+            '[contenteditable="true"]',
             'select',
             'a[href]',
             '[role="button"]',
@@ -113,9 +119,14 @@ interface MessageResponse {
                 return
             }
 
-            // Generate unique ID for this element
-            const elementId = `llm-${elementIndex++}`
-            el.setAttribute('data-llm-id', elementId)
+            // Generate unique ID for this element if it does not have one
+            let elementId = el.getAttribute('data-llm-id')
+            if (!elementId) {
+                const uniqueId = (window as any).llm_page_scanner_element_index++
+                const randomStr = Math.random().toString(36).substring(2, 8)
+                elementId = `llm-${uniqueId}-${randomStr}`
+                el.setAttribute('data-llm-id', elementId)
+            }
 
             // Extract element information
             const elementInfo: ElementInfo = {
