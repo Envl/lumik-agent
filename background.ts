@@ -295,7 +295,7 @@ The above plan provides context for the current task execution. Use it to guide 
 
 1. Understand the user's command
 2. Analyze the current page context
-3. Decide on the next action to take
+3. Decide on the next action to take (do not take action on webpage unless the user explicitly asks for it)
 
 You have access to these tools:
 ${toolsList}${taskPlanSection}
