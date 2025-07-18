@@ -1336,14 +1336,9 @@ async function domType(elementId: string, text: string, hitEnter: boolean): Prom
                     ) {
                         this.focusEditor(element)
                         element.value = text
+                        // Only dispatch 'input' event, let browser handle 'change' naturally
                         element.dispatchEvent(
                             new Event('input', {
-                                bubbles: true,
-                                cancelable: true
-                            })
-                        )
-                        element.dispatchEvent(
-                            new Event('change', {
                                 bubbles: true,
                                 cancelable: true
                             })
@@ -1368,7 +1363,7 @@ async function domType(elementId: string, text: string, hitEnter: boolean): Prom
                     },
 
                     async inputText(editor: HTMLElement, text: string) {
-                        console.log('inputText called:', text, editor)
+                        editor.click()
 
                         if (editor.tagName === 'INPUT' || editor.tagName === 'TEXTAREA') {
                             this.inputTextByValue(

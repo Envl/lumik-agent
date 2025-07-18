@@ -67,7 +67,7 @@
                 bind:value={$userInput}
                 type="text"
                 placeholder="Ask me anything..."
-                maxlength="500"
+                maxlength="5000"
                 disabled={$isProcessing}
                 onkeypress={handle_key_press}
                 class="relative z-10 flex-1 border-none bg-transparent px-5 py-3.5 text-[15px] font-normal text-slate-800 outline-none placeholder:text-slate-400 disabled:opacity-70"
@@ -132,12 +132,12 @@
         <div class="flex items-center gap-2">
             <span
                 class="rounded-md bg-slate-400/10 px-2 py-1 text-xs font-medium text-slate-400 transition-all duration-200"
-                class:text-amber-600={charCount > 450}
-                class:bg-amber-100={charCount > 450}
-                class:text-red-600={charCount > 490}
-                class:bg-red-100={charCount > 490}
+                class:text-amber-600={charCount > 4500}
+                class:bg-amber-100={charCount > 4500}
+                class:text-red-600={charCount > 4900}
+                class:bg-red-100={charCount > 4900}
             >
-                {charCount}/500
+                {charCount}/5000
             </span>
         </div>
 
