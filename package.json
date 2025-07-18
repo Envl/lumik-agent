@@ -1,5 +1,5 @@
 {
-    "name": "llm-browser",
+    "name": "lumik-agent",
     "version": "1.0.0",
     "description": "Lumik Agent - A general-purpose AI agent that can perform any browser task through natural language commands",
     "type": "module",
