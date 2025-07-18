@@ -111,10 +111,12 @@ class AgentState {
 // Available tools for the AI agent with comprehensive definitions
 const AVAILABLE_TOOLS: Record<string, string> = {
     // DOM Tools - For interacting with page elements
+    hit_enter:
+        'Simulates hitting the Enter key on an input field. Use this after typing text to submit forms or search queries. Args: {elementId: string} - The elementId from page scan results (e.g., "llm-5")',
     dom_click:
         'Clicks on a specific element on the page. Use this after scanning page to get element IDs. Args: {elementId: string} - The elementId from page scan results (e.g., "llm-5")',
     dom_type:
-        'Types text into an input field, textarea, or editable element. Clears existing content first. Args: {elementId: string, text: string, hitEnter?:boolean} - elementId from page scan, text to type, if true hit Enter after typing',
+        'Types text into an input field, textarea, or editable element. Clears existing content first. Args: {elementId: string, text: string, hitEnter?:boolean} - elementId from page scan, text to type, if true hit Enter after typing. always hitEnter for search requests',
     dom_select:
         'Selects an option from a dropdown/select element by matching option text. Args: {elementId: string, optionText: string} - elementId from page scan, partial text of option to select',
     dom_scroll:
@@ -289,7 +291,7 @@ ${taskPlan}
 The above plan provides context for the current task execution. Use it to guide your decision-making process.`
             : ''
 
-        return `You are Lumik Agent, an AI assistant that helps users perform tasks on websites. Your job is to:
+        return `You are Lumik Agent, an AI assistant that helps users perform tasks on websites or just chat with the user. Your job is to:
 
 1. Understand the user's command
 2. Analyze the current page context
@@ -300,6 +302,7 @@ ${toolsList}${taskPlanSection}
 
 IMPORTANT RULES:
 - Always think step by step and be methodical
+- If you realize the user is just talking to you, then just respond with a message
 - Only use one tool at a time per response
 - For tab navigation tasks: Use tabs_list first to see available tabs, then tabs_switch with appropriate arguments
 - For web page interactions: Use page_scan first to get element IDs, then use DOM tools with those IDs
@@ -319,7 +322,7 @@ TOOL USAGE PATTERNS:
 - Tab switching: tabs_list → tabs_switch (with tabId or url pattern)
 - Page interaction: page_scan → dom_click/dom_type/etc (with elementId)
 - Navigation: navigate_to (with full URL)
-- Task completion: task_complete (with success message)
+- Task completion: task_complete (with success message) (do not include useful info in plain text response along with task_complete, user can only see messages sent with 'respond', so just use this tool to complete the task)
 
 Response format: You must respond with a JSON object containing:
 {
@@ -597,7 +600,7 @@ Current Page Context:
 - Page Elements: ${pageContext.elements?.length || 0} interactive elements found
 - Page Type: ${pageContext.url?.includes('chrome://') || pageContext.url?.includes('extension://') ? 'Special page (chrome://, extension, etc.)' : 'Regular webpage'}
 
-Available Tools: dom_click, dom_type, dom_select, dom_scroll, dom_clear, navigate_to, navigate_back, navigate_forward, navigate_refresh, tabs_create, tabs_close, tabs_switch, tabs_list, downloads_start, storage_set, storage_get, page_scan, page_info, element_highlight, task_complete, ask_user, respond
+Available Tools: hit_enter, dom_click, dom_type, dom_select, dom_scroll, dom_clear, navigate_to, navigate_back, navigate_forward, navigate_refresh, tabs_create, tabs_close, tabs_switch, tabs_list, downloads_start, storage_set, storage_get, page_scan, page_info, element_highlight, task_complete, ask_user, respond
 
 Create a structured task plan with the following sections:
 
@@ -859,7 +862,7 @@ async function agentLoop(command: string, maxSteps = 20): Promise<void> {
             console.log('💬 DEBUG: Agent providing response')
             await sendToSidebar({
                 type: 'agentResponse',
-                content: action.arguments?.message || 'I see.'
+                content: action.arguments?.message || action.reasoning || 'I see.'
             })
             break
         }
@@ -1039,6 +1042,9 @@ async function executeTool(action: {
 
     try {
         switch (tool_name) {
+            case 'hit_enter':
+                return await hitEnter(args.elementId)
+
             case 'dom_click':
                 return await domClick(args.elementId)
 
@@ -1183,6 +1189,66 @@ async function initializeNetworkTracking(tabId: number): Promise<void> {
     }
 }
 
+async function hitEnter(elementId: string): Promise<ToolResult> {
+    const activeTab = await getActiveTab()
+    if (!activeTab?.id) {
+        return { success: false, error: 'No active tab found' }
+    }
+
+    try {
+        // Initialize network tracking
+        await initializeNetworkTracking(activeTab.id)
+
+        const result = await chrome.scripting.executeScript({
+            target: { tabId: activeTab.id },
+            func: (elementId: string) => {
+                const element = document.querySelector(
+                    `[data-llm-id="${elementId}"]`
+                ) as HTMLElement
+                if (!element) return { success: false, error: 'Element not found' }
+
+                // Dispatch Enter key event
+                const events = [
+                    new KeyboardEvent('keydown', {
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13,
+                        bubbles: true,
+                        cancelable: true
+                    }),
+                    new KeyboardEvent('keypress', {
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13,
+                        bubbles: true,
+                        cancelable: true
+                    }),
+                    new KeyboardEvent('keyup', {
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13,
+                        bubbles: true,
+                        cancelable: true
+                    })
+                ]
+
+                events.forEach((event) => element.dispatchEvent(event))
+
+                return { success: true }
+            },
+            args: [elementId]
+        })
+
+        return result[0].result as ToolResult
+    } catch (error) {
+        console.error('Error hitting Enter:', error)
+        return { success: false, error: (error as Error).message }
+    }
+}
+
 async function domClick(elementId: string): Promise<ToolResult> {
     const activeTab = await getActiveTab()
     if (!activeTab?.id) {
@@ -1318,13 +1384,35 @@ async function domType(elementId: string, text: string, hitEnter: boolean): Prom
                 dom.inputText(el, text)
 
                 if (hitEnter) {
-                    const enterEvent = new KeyboardEvent('keydown', {
-                        key: 'Enter',
-                        code: 'Enter',
-                        bubbles: true,
-                        cancelable: true
-                    })
-                    el.dispatchEvent(enterEvent)
+                    // Dispatch both keydown and keyup for Enter
+                    const events = [
+                        new KeyboardEvent('keydown', {
+                            key: 'Enter',
+                            code: 'Enter',
+                            keyCode: 13,
+                            which: 13,
+                            bubbles: true,
+                            cancelable: true
+                        }),
+                        new KeyboardEvent('keypress', {
+                            key: 'Enter',
+                            code: 'Enter',
+                            keyCode: 13,
+                            which: 13,
+                            bubbles: true,
+                            cancelable: true
+                        }),
+                        new KeyboardEvent('keyup', {
+                            key: 'Enter',
+                            code: 'Enter',
+                            keyCode: 13,
+                            which: 13,
+                            bubbles: true,
+                            cancelable: true
+                        })
+                    ]
+
+                    events.forEach((event) => el.dispatchEvent(event))
                 }
 
                 return { success: true }
